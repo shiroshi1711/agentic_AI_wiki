@@ -1,5 +1,39 @@
 from app.storage.database import get_connection
 
+def interpret_relationship(
+    source: str,
+    target: str,
+    relationship: str,
+) -> str:
+    """Interpret a relationship from the note owner's perspective."""
+
+    label = relationship.strip().casefold()
+
+    if label == "father":
+        return f"{target} is the father of {source}."
+
+    if label == "mother":
+        return f"{target} is the mother of {source}."
+
+    if label == "older sibling":
+        return f"{target} is the older sibling of {source}."
+
+    if label == "younger sibling":
+        return f"{target} is the younger sibling of {source}."
+
+    if label == "firstborn child":
+        return f"{target} is the firstborn child of {source}."
+
+    if label in {"close friend", "childhood friend", "academy close friend"}:
+        return f"{target} is a {label} of {source}."
+
+    if label in {"spouse", "romantic partner"}:
+        return f"{target} is the {label} of {source}."
+
+    return (
+        f"{source} identifies {target} as: "
+        f"{relationship}. Meaning not yet defined."
+    )
 
 def find_entity(name: str) -> dict | None:
     """Find a character by name."""
@@ -117,3 +151,75 @@ def get_character_profile(name: str) -> dict | None:
         "attributes": get_attributes(name),
         "relationships": get_relationships(name),
     }
+
+def get_connected_characters(
+    name: str,
+    max_depth: int = 1,
+) -> list[dict]:
+    """
+    Explore characters connected to a starting character.
+
+    max_depth controls how many relationship steps to follow.
+    """
+
+    if not 1 <= max_depth <= 3:
+        raise ValueError("max_depth must be between 1 and 3.")
+
+    visited = {name.strip().casefold()}
+    frontier = [name.strip()]
+    results = []
+
+    for depth in range(1, max_depth + 1):
+        next_frontier = []
+
+        for current_name in frontier:
+            relationships = get_relationships(
+                current_name,
+                direction="both",
+            )
+
+            for relationship in relationships:
+                source = relationship["source"]
+                target = relationship["target"]
+
+                connected_name = (
+                    target
+                    if source.casefold() == current_name.casefold()
+                    else source
+                )
+
+                key = connected_name.casefold()
+
+                if key in visited:
+                    continue
+
+                visited.add(key)
+
+                entity = find_entity(connected_name)
+
+                if entity is None:
+                    continue
+
+                results.append({
+                    "name": connected_name,
+                    "depth": depth,
+                    "relationship": relationship["relationship_type"],
+                    "source": relationship["source"],
+                    "target": relationship["target"],
+                    "interpretation": interpret_relationship(
+                        relationship["source"],
+                        relationship["target"],
+                        relationship["relationship_type"],
+                    ),
+                    "source_path": relationship["source_path"],
+                    "entity": entity,
+                })
+
+                next_frontier.append(connected_name)
+
+        frontier = next_frontier
+
+        if not frontier:
+            break
+
+    return results

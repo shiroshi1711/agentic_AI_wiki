@@ -1,7 +1,7 @@
 from app.tools.search import search_vault
 from app.tools.read import read_note
 from app.retrieval.context import retrieve_context
-from app.graph.query import get_character_profile
+from app.graph.query import get_character_profile, get_connected_characters
 from app.storage.database import create_pending_change
 from app.tools.write import get_note_hash, _validate_note_path
 
@@ -29,6 +29,24 @@ async def search_lore(query: str) -> dict:
 async def get_character_info(name: str) -> dict | None:
     """Retrieve a character's attributes and relationships."""
     return get_character_profile(name)
+
+
+async def explore_relationships(
+    name: str,
+    max_depth: int = 2,
+) -> dict:
+    """Explore a character's relationship network."""
+
+    connections = get_connected_characters(
+        name,
+        max_depth=max_depth,
+    )
+
+    return {
+        "character": name,
+        "max_depth": max_depth,
+        "connections": connections,
+    }
 
 
 async def propose_create_note(
@@ -117,6 +135,9 @@ TOOLS = {
         "description": "Prepare an edit to an existing Obsidian note for user approval. Does not write directly.",
         "function": propose_update_note,
     },
+    "explore_relationships": {
+        "function": explore_relationships,
+        "description": "Explore a character's relationship network and discover connected characters up to a specified depth.",},
 }
 
 

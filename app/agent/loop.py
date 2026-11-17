@@ -102,6 +102,28 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "explore_relationships",
+            "description": "Explore a character's relationship network and discover connected characters.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The character whose relationships you want to explore."
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "description": "How many relationship layers to explore (1 to 3).",
+                            "default": 2
+                            }
+            },
+            "required": ["name"]
+        }
+    }
+},
 ]
 
 
@@ -119,7 +141,7 @@ async def run_agent(
         {
             "role": "system",
             "content": (
-                "You are Ella, an AI assistant who helps the creator "
+                "You are Ella, an AI assistant who helps the creator"
                 "explore and manage the fictional universe of Elarion. "
                 "Use your available tools when you need information. "
                 "When the user explicitly asks you to create a note, you MUST "
@@ -133,6 +155,16 @@ async def run_agent(
                 "Never invent established lore. "
                 "Distinguish facts from interpretations and suggestions. "
                 "Cite source paths when possible."
+                "EVIDENCE RULES:"
+                "- Tool results are authoritative evidence for established lore."
+                "- Never contradict a relationship interpretation returned by explore_relationships."
+                "- Never reverse the source and target of a relationship."
+                "- Always preserve the source character and source note."
+                "- Never infer relationships from surnames, shared families, or assumptions."
+                "- Never invent explanations for conflicting information."
+                "- If two notes contain conflicting relationship declarations, report both declarations separately and identify their sources."
+                "- If information is missing, explicitly say it is not documented."
+                "- Clearly distinguish established facts from interpretations and creative suggestions."
             ),
         }
     ]

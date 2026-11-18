@@ -29,7 +29,7 @@ for file_path in files:
     total_attributes += len(attributes)
     total_relationships += len(relationships)
 
-    print(f"{result['name']}")
+    print(f"👤 {result['name']}")
     print(f"   Attributes: {len(attributes)}")
     print(f"   Relationships: {len(relationships)}")
 
@@ -47,8 +47,8 @@ print(f"Total attributes: {total_attributes}")
 print(f"Total relationships: {total_relationships}")
 
 if issues:
-    print("\n Potential issues:")
+    print("\n⚠️ Potential issues:")
     for issue in issues:
         print(f"- {issue}")
 else:
-    print("\nNo obvious parsing issues detected.")
+    print("\n✅ No obvious parsing issues detected.")

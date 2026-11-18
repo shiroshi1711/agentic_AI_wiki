@@ -152,6 +152,7 @@ def create_pending_change(
     note_path: str,
     content: str,
     original_hash: str | None = None,
+    expires_minutes: int = 30,
 ) -> str:
     """Save a proposed note change without modifying the vault."""
 
@@ -162,7 +163,7 @@ def create_pending_change(
 
     now = datetime.now(timezone.utc)
     created_at = now.isoformat()
-    expires_at = (now + timedelta(minutes=30)).isoformat()
+    expires_at = (now + timedelta(minutes=expires_minutes)).isoformat()
 
     connection = get_connection()
 

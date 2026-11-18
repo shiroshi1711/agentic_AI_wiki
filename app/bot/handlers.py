@@ -1,27 +1,74 @@
-from aiogram import Router
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
 from aiogram.filters.command import CommandObject
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+
+from app.agent.loop import run_agent
+from app.config.settings import get_settings
+from app.graph.indexer import index_character_graph
 from app.llm.ollama_provider import generate_response
-from app.tools.search import search_vault
-from app.tools.read import read_note
 from app.retrieval.indexer import index_vault
 from app.retrieval.semantic_indexer import index_vault_semantic
-from app.graph.indexer import index_character_graph
-from app.config.settings import get_settings
-from app.retrieval.context import retrieve_context
-from app.storage.memory import ( get_history,  save_message, clear_history)
-from app.llm.query_rewriter import rewrite_lore_query
-from app.graph.context import retrieve_graph_context
-from app.agent.loop import run_agent
-from datetime import datetime, timezone
-from aiogram import F
-from aiogram.types import (CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,)
-from app.storage.database import (get_pending_changes,get_pending_change, update_proposal_status,expire_pending_changes,)
-from app.tools.write import (create_note,update_note,get_note_hash,)
+from app.storage.audit import log_change, read_recent_changes
+from app.storage.database import (
+    expire_pending_changes,
+    get_pending_change,
+    get_pending_changes,
+    update_proposal_status,
+)
+from app.storage.memory import clear_history, get_history, save_message
+from app.tools.preview import build_proposal_preview, split_for_telegram
+from app.writing.chapters import is_chapter_path
+from app.tools.read import read_note
+from app.tools.search import search_vault
+from app.tools.write import create_note, update_note
 
+
+logger = logging.getLogger(__name__)
 
 router = Router()
+
+
+@asynccontextmanager
+async def keep_typing(message: Message):
+    """
+    Telegram's "typing..." only lasts ~5 seconds. A chapter can take minutes,
+    so re-send it every 4 seconds while the bot works.
+    """
+
+    async def repeat():
+        while True:
+            try:
+                await message.bot.send_chat_action(
+                    chat_id=message.chat.id,
+                    action="typing",
+                )
+            except Exception:
+                pass
+
+            await asyncio.sleep(4)
+
+    task = asyncio.create_task(repeat())
+
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+# ---------------------------------------------------------------------------
+# Approval flow: Ella PROPOSES, you decide.
+# ---------------------------------------------------------------------------
 
 async def send_pending_proposals(
     message: Message,
@@ -40,29 +87,47 @@ async def send_pending_proposals(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text=" Approve",
+                        text="✅ Approve",
                         callback_data=f"approve:{proposal['proposal_id']}",
                     ),
                     InlineKeyboardButton(
-                        text=" Reject",
+                        text="❌ Reject",
                         callback_data=f"reject:{proposal['proposal_id']}",
                     ),
                 ]
             ]
         )
 
+        if proposal["operation"] == "create" and is_chapter_path(proposal["note_path"]):
+            # A chapter is long: send the WHOLE draft in pieces, then the buttons.
+            for piece in split_for_telegram(proposal["content"]):
+                await message.answer(piece)
+
+            await message.answer(
+                "📖 Chapter draft ready.\n"
+                f"It would be saved as: {proposal['note_path']}\n\n"
+                "Nothing is saved yet. Approve to save it, reject to discard "
+                "it, or just tell me what to change and I will rewrite it.",
+                reply_markup=keyboard,
+            )
+            continue
+
+        # Plain text on purpose (no parse_mode): note text often contains
+        # characters like _ * [ ] that Telegram's Markdown refuses.
         await message.answer(
-            f" **Note change proposal**\n\n"
+            "📝 Note change proposal\n\n"
             f"Operation: {proposal['operation']}\n"
             f"Path: {proposal['note_path']}\n\n"
-            f"Preview:\n{proposal['content'][:1500]}\n\n"
+            f"{build_proposal_preview(proposal)}\n\n"
             "Nothing has been changed yet. Approve or reject?",
             reply_markup=keyboard,
-            parse_mode="Markdown",
         )
 
 
-def get_valid_proposal(callback: CallbackQuery,proposal_id: str,) -> tuple[dict | None, str | None]:
+def get_valid_proposal(
+    callback: CallbackQuery,
+    proposal_id: str,
+) -> tuple[dict | None, str | None]:
 
     expire_pending_changes()
 
@@ -86,54 +151,72 @@ def get_valid_proposal(callback: CallbackQuery,proposal_id: str,) -> tuple[dict 
     return proposal, None
 
 
+async def safe_edit(callback: CallbackQuery, text: str) -> None:
+    """Edit the proposal message; a failed edit must never break the flow."""
+    if callback.message is None:
+        return
+
+    try:
+        await callback.message.edit_text(text)
+    except Exception:
+        logger.warning("Could not edit the proposal message.", exc_info=True)
+
+
+async def rebuild_indexes() -> None:
+    """Refresh keyword, semantic, and graph indexes after a change."""
+    settings = get_settings()
+
+    # The keyword and graph indexes are normal (blocking) functions.
+    # to_thread runs them on the side so the bot stays responsive.
+    await asyncio.to_thread(index_vault)
+    await index_vault_semantic()
+    await asyncio.to_thread(index_character_graph, settings.vault_path)
+
+
 @router.callback_query(F.data.startswith("approve:"))
 async def approve_proposal(callback: CallbackQuery):
     proposal_id = callback.data.split(":", 1)[1]
 
-    proposal, error = get_valid_proposal(callback,proposal_id,)
+    proposal, error = get_valid_proposal(callback, proposal_id)
 
     if error:
         await callback.answer(error, show_alert=True)
         return
 
     # Claim the proposal so it cannot be approved twice.
-    claimed = update_proposal_status(proposal_id,expected_status="pending",new_status="approved",)
+    claimed = update_proposal_status(
+        proposal_id,
+        expected_status="pending",
+        new_status="approved",
+    )
 
     if not claimed:
-        await callback.answer("This proposal has already been processed.",show_alert=True,)
+        await callback.answer(
+            "This proposal has already been processed.",
+            show_alert=True,
+        )
         return
+
+    # Answer the button RIGHT AWAY. Telegram expects a quick reply, and
+    # everything below (especially re-indexing) can be slow.
+    await callback.answer("Saving...")
 
     try:
         if proposal["operation"] == "create":
-            result = create_note(proposal["note_path"],proposal["content"],)
+            result = create_note(
+                proposal["note_path"],
+                proposal["content"],
+            )
 
         elif proposal["operation"] == "update":
-            result = update_note(proposal["note_path"],proposal["content"],
-                expected_hash=proposal["original_hash"],)
+            result = update_note(
+                proposal["note_path"],
+                proposal["content"],
+                expected_hash=proposal["original_hash"],
+            )
 
         else:
             raise ValueError("Unknown proposal operation.")
-
-        update_proposal_status(proposal_id,expected_status="approved",
-            new_status="completed",)
-
-        # Refresh Ella's knowledge indexes after the file is written.
-        try:
-            settings = get_settings()
-            index_vault()
-            await index_vault_semantic()
-            index_character_graph(settings.vault_path)
-        except Exception:
-        # The note is already saved. Indexing can be retried with /reindex.
-            pass
-
-        await callback.answer("Approved! Note updated.")
-
-        if callback.message:
-            await callback.message.edit_text(
-                f"✅ **Proposal approved!**\n\n{result}",
-                parse_mode="Markdown",
-            )
 
     except Exception as error:
         update_proposal_status(
@@ -141,18 +224,44 @@ async def approve_proposal(callback: CallbackQuery):
             expected_status="approved",
             new_status="failed",
         )
+        log_change(proposal, "failed", str(error))
 
-        await callback.answer(
-            "The change failed. Your note was not successfully updated.",
-            show_alert=True,
+        await safe_edit(
+            callback,
+            f"⚠️ Proposal failed. Your note was not changed.\n\n{error}",
+        )
+        raise
+
+    # The note is saved. Record it before anything else can go wrong.
+    update_proposal_status(
+        proposal_id,
+        expected_status="approved",
+        new_status="completed",
+    )
+    log_change(proposal, "completed", result)
+
+    await safe_edit(
+        callback,
+        f"✅ Proposal approved!\n\n{result}\n\n"
+        "Updating Ella's search indexes...",
+    )
+
+    try:
+        await rebuild_indexes()
+        await safe_edit(
+            callback,
+            f"✅ Proposal approved!\n\n{result}\n\n"
+            "Search indexes are up to date.",
+        )
+    except Exception:
+        logger.exception("Re-indexing after approval failed.")
+        await safe_edit(
+            callback,
+            f"✅ Proposal approved!\n\n{result}\n\n"
+            "⚠️ The note is saved, but updating the search indexes "
+            "failed. Run /reindex when Ollama is available.",
         )
 
-        if callback.message:
-            await callback.message.edit_text(
-                f"⚠️ Proposal failed.\n\n{error}"
-            )
-
-        raise
 
 @router.callback_query(F.data.startswith("reject:"))
 async def reject_proposal(callback: CallbackQuery):
@@ -180,16 +289,37 @@ async def reject_proposal(callback: CallbackQuery):
         )
         return
 
+    log_change(proposal, "rejected")
+
     await callback.answer("Proposal rejected.")
 
-    if callback.message:
-        await callback.message.edit_text(
-            f"❌ Proposal rejected.\n\n"
-            f"Operation: {proposal['operation']}\n"
-            f"Note: {proposal['note_path']}\n\n"
-            "Your Obsidian vault was not changed."
+    await safe_edit(
+        callback,
+        f"❌ Proposal rejected.\n\n"
+        f"Operation: {proposal['operation']}\n"
+        f"Note: {proposal['note_path']}\n\n"
+        "Your Obsidian vault was not changed.",
+    )
+
+
+@router.message(Command("changes"))
+async def changes_command(message: Message):
+    records = read_recent_changes(limit=10)
+
+    if not records:
+        await message.answer("No changes have been recorded yet.")
+        return
+
+    lines = ["🗒️ Recent changes (newest first):\n"]
+
+    for record in records:
+        lines.append(
+            f"• {record['time'][:16].replace('T', ' ')} UTC | "
+            f"{record['status']} | {record['operation']} | "
+            f"{record['note_path']}"
         )
 
+    await message.answer("\n".join(lines))
 
 
 @router.message(Command("start"))
@@ -381,12 +511,13 @@ async def lore_command(
         request_started_at = datetime.now(timezone.utc).isoformat()
         history = get_history(chat_id, user_id)
 
-        answer = await run_agent(
-            question,
-            history=history,
-            chat_id=chat_id,
-            user_id=user_id
-        )
+        async with keep_typing(message):
+            answer = await run_agent(
+                question,
+                history=history,
+                chat_id=chat_id,
+                user_id=user_id,
+            )
 
         save_message(chat_id, user_id, "user", question)
         save_message(chat_id, user_id, "assistant", answer)
@@ -457,12 +588,13 @@ async def chat_handler(message: Message):
         request_started_at = datetime.now(timezone.utc).isoformat()
         history = get_history(chat_id, user_id)
 
-        answer = await run_agent(
-            prompt,
-            history=history,
-            chat_id=chat_id,
-            user_id=user_id
-        )
+        async with keep_typing(message):
+            answer = await run_agent(
+                prompt,
+                history=history,
+                chat_id=chat_id,
+                user_id=user_id,
+            )
 
         save_message(chat_id, user_id, "user", prompt)
         save_message(chat_id, user_id, "assistant", answer)

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from app.config.settings import get_settings
 from app.llm.embeddings import generate_embeddings
@@ -57,7 +58,14 @@ async def index_vault_semantic() -> int:
 
     for start in range(0, len(pending_chunks), BATCH_SIZE):
         batch = pending_chunks[start:start + BATCH_SIZE]
-        texts = [item["content"] for item in batch]
+        # Each chunk is embedded WITH its note's title and folder. A chunk from
+        # the middle of "The Sundering" may never say "Sundering"; without this
+        # label its meaning-numbers could not tell which event it belongs to.
+        texts = [
+            f"Note: {Path(item['path']).stem} (folder: {Path(item['path']).parent.as_posix()})\n\n"
+            + item["content"]
+            for item in batch
+        ]
 
         embeddings = await generate_embeddings(texts)
 

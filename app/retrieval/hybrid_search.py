@@ -19,12 +19,21 @@ def reciprocal_rank_fusion(
                 "file": path,
                 "score": 0.0,
                 "sources": [],
+                "chunks": [],
             }
 
         combined[path]["score"] += 1 / (k + rank)
 
         if source not in combined[path]["sources"]:
             combined[path]["sources"].append(source)
+
+        # Remember WHICH parts of the note matched (semantic hits only).
+        if "chunk_index" in result:
+            combined[path]["chunks"].append({
+                "chunk_index": result["chunk_index"],
+                "content": result["content"],
+                "score": result["score"],
+            })
 
     for rank, result in enumerate(keyword_results, start=1):
         add_result(result, rank, "keyword")

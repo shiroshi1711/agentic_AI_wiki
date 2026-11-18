@@ -19,6 +19,10 @@ BACKUP_DIR = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Safety checks
+# ---------------------------------------------------------------------------
+
 def _validate_note_path(note_path: str) -> tuple[Path, Path]:
     """Validate a relative Markdown path inside the Obsidian vault."""
 
@@ -55,8 +59,17 @@ def _validate_content(content: str) -> None:
         raise ValueError("Note exceeds the 1 MB size limit.")
 
 
-def get_note_hash(note_path: str) -> str:
-    """Return a SHA-256 fingerprint of an existing note."""
+# ---------------------------------------------------------------------------
+# Reading helpers used when PREPARING a change (nothing is written here)
+# ---------------------------------------------------------------------------
+
+def read_note_with_hash(note_path: str) -> tuple[str, str]:
+    """
+    Read an existing note ONCE and return (text, fingerprint).
+
+    Both values come from the exact same bytes, so the fingerprint always
+    matches the text we are about to edit.
+    """
 
     vault_path, target_path = _validate_note_path(note_path)
 
@@ -71,10 +84,65 @@ def get_note_hash(note_path: str) -> str:
     if target_path.stat().st_size > MAX_NOTE_SIZE:
         raise ValueError("Note is too large.")
 
-    content = target_path.read_bytes()
+    raw = target_path.read_bytes()
 
-    return hashlib.sha256(content).hexdigest()
+    return (
+        raw.decode("utf-8"),
+        hashlib.sha256(raw).hexdigest(),
+    )
 
+
+def get_note_hash(note_path: str) -> str:
+    """Return a SHA-256 fingerprint of an existing note."""
+    return read_note_with_hash(note_path)[1]
+
+
+def apply_text_edit(content: str, old_text: str, new_text: str) -> str:
+    """
+    Replace ONE exact piece of text inside a note.
+
+    This is much safer than letting the AI retype a whole note:
+    if the AI guesses wrong, we refuse instead of damaging the note.
+    """
+
+    if not old_text:
+        raise ValueError("old_text must not be empty.")
+
+    if old_text == new_text:
+        raise ValueError("old_text and new_text are identical.")
+
+    count = content.count(old_text)
+
+    if count == 0:
+        raise ValueError(
+            "old_text was not found in the note. "
+            "Read the note again and copy the text exactly."
+        )
+
+    if count > 1:
+        raise ValueError(
+            f"old_text appears {count} times in the note. "
+            "Include more surrounding text so it matches exactly once."
+        )
+
+    return content.replace(old_text, new_text, 1)
+
+
+def apply_append(content: str, text: str) -> str:
+    """Add text to the end of a note (on its own new line)."""
+
+    if not text or not text.strip():
+        raise ValueError("There is no text to append.")
+
+    if content and not content.endswith("\n"):
+        content += "\n"
+
+    return content + text.rstrip("\n") + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Writing helpers used ONLY after the user taps Approve
+# ---------------------------------------------------------------------------
 
 def _create_backup(
     vault_path: Path,
@@ -131,9 +199,11 @@ def create_note(note_path: str, content: str) -> str:
     temporary_path = None
 
     try:
+        # newline="" means: write the text exactly as given.
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
+            newline="",
             dir=target_path.parent,
             delete=False,
         ) as temporary_file:
@@ -150,49 +220,6 @@ def create_note(note_path: str, content: str) -> str:
             temporary_path.unlink()
 
 
-def update_note(note_path: str, content: str) -> str:
-    """Back up and replace an existing Markdown note."""
-
-    _validate_content(content)
-
-    vault_path, target_path = _validate_note_path(note_path)
-
-    if target_path.is_symlink():
-        raise ValueError("Symbolic links are not allowed.")
-
-    if not target_path.is_file():
-        raise FileNotFoundError(
-            f"Note does not exist: {note_path}"
-        )
-
-    # Preserve the original before changing anything.
-    backup_path = _create_backup(
-        vault_path,
-        target_path,
-    )
-
-    temporary_path = None
-
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=target_path.parent,
-            delete=False,
-        ) as temporary_file:
-            temporary_file.write(content)
-            temporary_path = Path(temporary_file.name)
-
-        os.replace(temporary_path, target_path)
-
-        return (
-            f"Updated note: {note_path}\n"
-            f"Backup saved at: {backup_path}"
-        )
-
-    finally:
-        if temporary_path and temporary_path.exists():
-            temporary_path.unlink()
 def update_note(
     note_path: str,
     content: str,
@@ -234,6 +261,7 @@ def update_note(
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
+            newline="",
             dir=target_path.parent,
             delete=False,
         ) as temporary_file:

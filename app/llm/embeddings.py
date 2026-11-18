@@ -25,7 +25,7 @@ async def generate_embeddings(
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            "http://127.0.0.1:11434/api/embed",
+            f"{settings.ollama_url}/api/embed",
             json=payload,
         ) as response:
             response.raise_for_status()

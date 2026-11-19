@@ -42,6 +42,7 @@ PROPOSAL_TOOLS = {
     "propose_update_note",
     "draft_chapter",
     "revise_chapter",
+    "propose_delete_note",
 }
 
 
@@ -142,7 +143,10 @@ TOOL_SCHEMAS = [
         {
             "note_path": {"type": "string"},
             "old_text": {"type": "string", "description": "Exact text currently in the note."},
-            "new_text": {"type": "string", "description": "What it should say instead."},
+            "new_text": {
+                "type": "string",
+                "description": "What it should say instead. Use an empty string to remove old_text.",
+            },
         },
         ["note_path", "old_text", "new_text"],
     ),
@@ -155,6 +159,15 @@ TOOL_SCHEMAS = [
             "text": {"type": "string", "description": "The text to add at the end."},
         },
         ["note_path", "text"],
+    ),
+    _tool(
+        "propose_delete_note",
+        "Prepare deleting a WHOLE note. Use ONLY when the author clearly "
+        "asks to delete or remove an entire note. To remove just a sentence "
+        "or section, use propose_edit_note with an empty new_text instead. "
+        "Never deletes directly: the author must confirm.",
+        {"note_path": {"type": "string"}},
+        ["note_path"],
     ),
     _tool(
         "draft_chapter",
@@ -201,6 +214,10 @@ reply. Use the real tool functions.
 - To change an existing note: first call read_note, then call \
 propose_edit_note (replace exact text) or propose_append_note (add to the \
 end). Never retype a whole note.
+- To remove a sentence or section, use propose_edit_note with an empty \
+new_text. To delete a WHOLE note, call propose_delete_note, and only when \
+the author clearly asked for that. If it is unclear which note they mean, \
+ask first.
 - To write or continue a story chapter, call draft_chapter (never write \
 the chapter yourself in chat). To change a chapter draft that is waiting \
 for approval, call revise_chapter with the author's feedback. When a \

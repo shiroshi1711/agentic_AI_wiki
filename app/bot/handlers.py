@@ -31,7 +31,7 @@ from app.tools.preview import build_proposal_preview, split_for_telegram
 from app.writing.chapters import is_chapter_path
 from app.tools.read import read_note
 from app.tools.search import search_vault
-from app.tools.write import create_note, update_note
+from app.tools.write import create_note, delete_note, update_note
 
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,34 @@ async def send_pending_proposals(
                 ]
             ]
         )
+
+        if proposal["operation"] == "delete":
+            # Deleting gets its own, unmistakable buttons.
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🗑️ Yes, delete this note",
+                            callback_data=f"approve:{proposal['proposal_id']}",
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="↩️ No, keep it",
+                            callback_data=f"reject:{proposal['proposal_id']}",
+                        ),
+                    ],
+                ]
+            )
+
+            await message.answer(
+                "⚠️ Delete note?\n\n"
+                f"Path: {proposal['note_path']}\n\n"
+                f"{build_proposal_preview(proposal)}\n\n"
+                "Nothing has been deleted yet.",
+                reply_markup=keyboard,
+            )
+            continue
 
         if proposal["operation"] == "create" and is_chapter_path(proposal["note_path"]):
             # A chapter is long: send the WHOLE draft in pieces, then the buttons.
@@ -199,7 +227,7 @@ async def approve_proposal(callback: CallbackQuery):
 
     # Answer the button RIGHT AWAY. Telegram expects a quick reply, and
     # everything below (especially re-indexing) can be slow.
-    await callback.answer("Saving...")
+    await callback.answer("Working on it...")
 
     try:
         if proposal["operation"] == "create":
@@ -212,6 +240,12 @@ async def approve_proposal(callback: CallbackQuery):
             result = update_note(
                 proposal["note_path"],
                 proposal["content"],
+                expected_hash=proposal["original_hash"],
+            )
+
+        elif proposal["operation"] == "delete":
+            result = delete_note(
+                proposal["note_path"],
                 expected_hash=proposal["original_hash"],
             )
 

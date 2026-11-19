@@ -278,3 +278,46 @@ def update_note(
     finally:
         if temporary_path and temporary_path.exists():
             temporary_path.unlink()
+
+
+def delete_note(note_path: str, expected_hash: str) -> str:
+    """
+    Delete a note, but only after making a backup copy OUTSIDE the vault.
+
+    Safety order: check the path -> check the note is unchanged since the
+    proposal -> copy it to the backup folder -> verify the copy -> delete.
+    If any step fails, nothing is deleted.
+    """
+
+    vault_path, target_path = _validate_note_path(note_path)
+
+    if target_path.is_symlink():
+        raise ValueError("Symbolic links are not allowed.")
+
+    if not target_path.is_file():
+        raise FileNotFoundError(
+            f"Note does not exist: {note_path}"
+        )
+
+    if get_note_hash(note_path) != expected_hash:
+        raise ValueError(
+            "This note has changed since the deletion was proposed. "
+            "Please review it again before deleting."
+        )
+
+    backup_path = _create_backup(vault_path, target_path)
+
+    if (
+        not backup_path.is_file()
+        or backup_path.stat().st_size != target_path.stat().st_size
+    ):
+        raise RuntimeError(
+            "The backup could not be verified, so the note was NOT deleted."
+        )
+
+    target_path.unlink()
+
+    return (
+        f"Deleted note: {note_path}\n"
+        f"Backup saved at: {backup_path}"
+    )

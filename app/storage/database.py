@@ -12,6 +12,56 @@ DB_PATH = (
 )
 
 
+PENDING_CHANGES_SQL = """
+    CREATE TABLE IF NOT EXISTS pending_changes (
+        proposal_id TEXT PRIMARY KEY,
+        chat_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        operation TEXT NOT NULL
+            CHECK (operation IN ('create', 'update', 'delete')),
+        note_path TEXT NOT NULL,
+        content TEXT NOT NULL,
+        original_hash TEXT,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (status IN (
+                'pending',
+                'approved',
+                'rejected',
+                'completed',
+                'failed',
+                'expired'
+            )),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )
+"""
+
+PENDING_COLUMNS = (
+    "proposal_id, chat_id, user_id, operation, note_path, content, "
+    "original_hash, status, created_at, expires_at"
+)
+
+
+def _upgrade_pending_changes(connection) -> None:
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'pending_changes'"
+    ).fetchone()
+
+    if row is None or "'delete'" in row["sql"]:
+        return  # no table yet, or already the new version
+
+    connection.execute(
+        "ALTER TABLE pending_changes RENAME TO pending_changes_old"
+    )
+    connection.execute(PENDING_CHANGES_SQL)
+    connection.execute(
+        f"INSERT INTO pending_changes ({PENDING_COLUMNS}) "
+        f"SELECT {PENDING_COLUMNS} FROM pending_changes_old"
+    )
+    connection.execute("DROP TABLE pending_changes_old")
+
+
 def get_connection():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -113,29 +163,12 @@ def initialize_database():
 
         
         # Pending note changes: nothing is written to the vault until approved.
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS pending_changes (
-                proposal_id TEXT PRIMARY KEY,
-                chat_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                operation TEXT NOT NULL
-                    CHECK (operation IN ('create', 'update')),
-                note_path TEXT NOT NULL,
-                content TEXT NOT NULL,
-                original_hash TEXT,
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN (
-                        'pending',
-                        'approved',
-                        'rejected',
-                        'completed',
-                        'failed',
-                        'expired'
-                    )),
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL
-            )
-        """)
+        # Databases made before deletion existed only allow 'create' and
+        # 'update'. SQLite cannot change that rule in place, so rebuild the
+        # table once (all existing proposals are kept).
+        _upgrade_pending_changes(connection)
+
+        connection.execute(PENDING_CHANGES_SQL)
 
         # Index for faster approval lookups
         connection.execute("""
@@ -156,8 +189,8 @@ def create_pending_change(
 ) -> str:
     """Save a proposed note change without modifying the vault."""
 
-    if operation not in ("create", "update"):
-        raise ValueError("Operation must be 'create' or 'update'.")
+    if operation not in ("create", "update", "delete"):
+        raise ValueError("Operation must be 'create', 'update' or 'delete'.")
 
     proposal_id = str(uuid4())
 

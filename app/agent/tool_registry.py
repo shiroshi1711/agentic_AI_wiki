@@ -344,6 +344,40 @@ async def revise_chapter(
         proposal_id, old["note_path"], chapter, notes, sources, "revised"
     )
 
+
+async def propose_delete_note(
+    note_path: str,
+    chat_id: int,
+    user_id: int,
+) -> dict:
+    """
+    Prepare deleting a WHOLE note. Nothing is deleted until the user
+    taps the confirmation button.
+    """
+
+    _, original_hash = read_note_with_hash(note_path)  # must exist
+
+    proposal_id = create_pending_change(
+        chat_id=chat_id,
+        user_id=user_id,
+        operation="delete",
+        note_path=note_path,
+        content="",
+        original_hash=original_hash,
+    )
+
+    return {
+        "approval_required": True,
+        "proposal_id": proposal_id,
+        "operation": "delete",
+        "note_path": note_path,
+        "message": (
+            "Deletion prepared. The user will now be asked to confirm. "
+            "Nothing is deleted yet. Tell the user which note you "
+            "prepared to delete."
+        ),
+    }
+
 TOOLS = {
     "search_notes": {
         "description": "Search for relevant Markdown notes in the Obsidian vault.",
@@ -380,6 +414,10 @@ TOOLS = {
     "explain_note": {
         "description": "Cover a whole note, even a long one, section by section.",
         "function": explain_note,
+    },
+    "propose_delete_note": {
+        "description": "Prepare deleting a whole note, for user confirmation.",
+        "function": propose_delete_note,
     },
     "draft_chapter": {
         "description": "Write a new story chapter draft for user approval.",

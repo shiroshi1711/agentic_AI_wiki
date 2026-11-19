@@ -18,6 +18,24 @@ MAX_DIFF_PREVIEW = 3000
 def build_proposal_preview(proposal: dict) -> str:
     content = proposal["content"]
 
+    if proposal["operation"] == "delete":
+        try:
+            current, _ = read_note_with_hash(proposal["note_path"])
+        except (OSError, ValueError) as error:
+            return f"(Could not read the note: {error})"
+
+        shown = current[:800]
+
+        if len(current) > 800:
+            shown += "\n...[the note continues]"
+
+        return (
+            f"This note will be DELETED ({len(current)} characters, "
+            f"{len(current.splitlines())} lines). Its content starts:\n\n"
+            f"{shown}\n\n"
+            "A backup copy is saved outside your vault first."
+        )
+
     if proposal["operation"] == "create":
         text = content[:MAX_CREATE_PREVIEW]
 
